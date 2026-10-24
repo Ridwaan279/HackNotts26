@@ -1,0 +1,9 @@
+{
+  "name": "BYTE",
+  "short_name": "BYTE",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fafafa",
+  "theme_color": "#fafafa"
+}
