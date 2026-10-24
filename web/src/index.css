@@ -61,7 +61,7 @@
   }
   body {
     @apply bg-background text-foreground antialiased;
-    /* stop the page bouncing and the grey tap flash so it feels like an app */
+    /* no rubber band scroll or grey flash on tap */
     overscroll-behavior: none;
     -webkit-tap-highlight-color: transparent;
   }

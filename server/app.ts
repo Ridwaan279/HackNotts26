@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { Health, PetState, Phase } from "../shared/protocol.js";
 import { runTurn } from "./agent.js";
 import type { Config } from "./config.js";
+import type { Speak } from "./elevenlabs.js";
 import type { MemoryTools } from "./mcp/client.js";
 import { checkOllama, type ModelChat } from "./ollama.js";
 
@@ -12,10 +13,12 @@ export function createApp({
   tools,
   chat,
   config,
+  speak,
 }: {
   tools: MemoryTools;
   chat: ModelChat;
   config: Config;
+  speak?: Speak;
 }) {
   const app = express();
   const state: PetState = {
@@ -87,6 +90,34 @@ export function createApp({
       res.status(502).json({ error: state.lastReply });
     } finally {
       busy = false;
+    }
+  });
+  app.post("/api/speak", async (req, res) => {
+    const parsed = z
+      .object({ text: z.string().trim().min(1).max(2000) })
+      .strict()
+      .safeParse(req.body);
+    if (!parsed.success) {
+      res
+        .status(400)
+        .json({ error: "Send text containing 1 to 2000 characters." });
+      return;
+    }
+    if (!speak) {
+      res
+        .status(503)
+        .json({ error: "Voice is off. Set ELEVENLABS_API_KEY in .env." });
+      return;
+    }
+    try {
+      const audio = await speak(parsed.data.text);
+      res.type("audio/mpeg").send(Buffer.from(audio));
+    } catch (error) {
+      res
+        .status(502)
+        .json({
+          error: error instanceof Error ? error.message : String(error),
+        });
     }
   });
   app.use("/api", (_req, res) => {

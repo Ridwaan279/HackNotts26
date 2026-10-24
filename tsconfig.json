@@ -10,7 +10,6 @@
     "rootDir": ".",
     "outDir": "dist",
     "types": ["node"],
-    // only here so the shadcn CLI can resolve @/ when run from the repo root
     "paths": { "@/*": ["./web/src/*"] }
   },
   "include": [

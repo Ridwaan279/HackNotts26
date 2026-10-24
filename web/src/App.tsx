@@ -1,12 +1,135 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Mic } from "lucide-react";
 
+import type { TurnResult } from "../../shared/protocol";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { createRecognition, type Recognition } from "@/lib/speech";
 import { cn } from "@/lib/utils";
 
+type Status = "idle" | "listening" | "thinking" | "speaking";
+
+const labels: Record<Status, string> = {
+  idle: "Hold to talk",
+  listening: "Listening...",
+  thinking: "Thinking...",
+  speaking: "Speaking...",
+};
+
+async function post(path: string, body: unknown) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const data = (await response.json().catch(() => ({}))) as {
+      error?: string;
+    };
+    throw new Error(data.error || `Request failed (${response.status}).`);
+  }
+  return response;
+}
+
 export function App() {
-  const [held, setHeld] = useState(false);
+  const [status, setStatus] = useState<Status>("idle");
+  const [heard, setHeard] = useState("");
+  const [reply, setReply] = useState("");
+  const [error, setError] = useState("");
+  const holding = useRef(false);
+  const recognition = useRef<Recognition | null>(null);
+  const audio = useRef<AudioContext | null>(null);
+  const playing = useRef<AudioBufferSourceNode | null>(null);
+
+  function startListening() {
+    if (holding.current || status === "thinking") return;
+    holding.current = true;
+    setError("");
+    playing.current?.stop();
+    // ios wont play the reply later unless audio gets unlocked on a tap
+    audio.current ??= new AudioContext();
+    void audio.current.resume();
+
+    const rec = createRecognition();
+    if (!rec) {
+      holding.current = false;
+      setError("This browser can't do speech recognition.");
+      return;
+    }
+    let final = "";
+    let latest = "";
+    rec.lang = navigator.language;
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.onresult = (event) => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        if (result.isFinal) final += `${result[0].transcript} `;
+        else interim += result[0].transcript;
+      }
+      latest = `${final}${interim}`.trim();
+      setHeard(latest);
+    };
+    rec.onerror = (event) => {
+      if (event.error === "not-allowed")
+        setError("Mic blocked. Open the app over https and allow the mic.");
+      else if (event.error !== "no-speech" && event.error !== "aborted")
+        setError(`Speech recognition failed: ${event.error}`);
+    };
+    rec.onend = () => {
+      recognition.current = null;
+      void respond(latest);
+    };
+    recognition.current = rec;
+    setHeard("");
+    setStatus("listening");
+    rec.start();
+  }
+
+  function stopListening() {
+    if (!holding.current) return;
+    holding.current = false;
+    // onend does the sending once the last words come in
+    recognition.current?.stop();
+  }
+
+  async function respond(text: string) {
+    if (!text) {
+      setStatus("idle");
+      return;
+    }
+    setStatus("thinking");
+    try {
+      const turn = (await (
+        await post("/api/chat", { message: text })
+      ).json()) as TurnResult;
+      setReply(turn.reply);
+      await speak(turn.reply);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      // if the mic got pressed again mid reply leave it on listening
+      setStatus((current) => (current === "listening" ? current : "idle"));
+    }
+  }
+
+  async function speak(text: string) {
+    const context = audio.current;
+    if (!context) return;
+    const response = await post("/api/speak", { text });
+    const buffer = await context.decodeAudioData(await response.arrayBuffer());
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
+    playing.current = source;
+    setStatus("speaking");
+    await new Promise<void>((resolve) => {
+      source.onended = () => resolve();
+      source.start();
+    });
+    playing.current = null;
+  }
 
   return (
     <div className="mx-auto flex h-full max-w-md flex-col px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))]">
@@ -15,9 +138,15 @@ export function App() {
       </header>
 
       <main className="grid flex-1 grid-cols-2 grid-rows-[1fr_auto] gap-3 py-3">
-        {/* main character goes here */}
+        {/* TODO: actual character instead of :) */}
         <Card className="col-span-2 items-center justify-center">
-          <CardContent className="text-7xl font-bold select-none">:)</CardContent>
+          <CardContent className="flex flex-col items-center gap-4 text-center">
+            <span className="text-7xl font-bold select-none">:)</span>
+            {heard && (
+              <p className="text-muted-foreground text-sm">{heard}</p>
+            )}
+            {reply && <p className="font-medium">{reply}</p>}
+          </CardContent>
         </Card>
         <Card className="gap-1 px-4 py-4">
           <span className="text-muted-foreground text-xs">Mood</span>
@@ -29,34 +158,37 @@ export function App() {
         </Card>
       </main>
 
-      {/* TODO: push to talk + elevenlabs voice for replies. mic needs https on the phone */}
       <footer className="flex flex-col items-center gap-2 pt-3">
+        {error && (
+          <p className="text-destructive text-center text-sm" role="alert">
+            {error}
+          </p>
+        )}
         <Button
           size="icon"
           aria-label="Hold to talk"
-          aria-pressed={held}
+          aria-pressed={status === "listening"}
+          disabled={status === "thinking"}
           className={cn(
             "size-20 touch-none rounded-full select-none [-webkit-touch-callout:none] [&_svg:not([class*='size-'])]:size-8",
-            held && "scale-90 bg-red-500 hover:bg-red-500",
+            status === "listening" && "scale-90 bg-red-500 hover:bg-red-500",
           )}
           onPointerDown={(event) => {
-            // keep getting events even if the finger slides off the button
+            // still get the release if the finger slides off
             event.currentTarget.setPointerCapture(event.pointerId);
-            setHeld(true);
+            startListening();
           }}
-          onPointerUp={() => setHeld(false)}
-          onPointerCancel={() => setHeld(false)}
+          onPointerUp={stopListening}
+          onPointerCancel={stopListening}
           onKeyDown={(event) => {
-            if (event.key === " " || event.key === "Enter") setHeld(true);
+            if (event.key === " " || event.key === "Enter") startListening();
           }}
-          onKeyUp={() => setHeld(false)}
+          onKeyUp={stopListening}
           onContextMenu={(event) => event.preventDefault()}
         >
           <Mic />
         </Button>
-        <span className="text-muted-foreground text-sm">
-          {held ? "Listening..." : "Hold to talk"}
-        </span>
+        <span className="text-muted-foreground text-sm">{labels[status]}</span>
       </footer>
     </div>
   );
