@@ -122,6 +122,16 @@ bool earsMoving = false;
 byte earStep = 0;
 unsigned long lastEarStep = 0;
 
+// Pi link, the pi sends one word per line over usb serial when the phase changes
+// idle, listening, thinking, acting, speaking, error, offline
+enum PiPhase { PI_IDLE, PI_LISTENING, PI_THINKING, PI_ACTING, PI_SPEAKING, PI_ERROR };
+PiPhase piPhase = PI_IDLE;
+unsigned long piPhaseAt = 0;
+int piDrawnFrame = -1;
+char piLine[16];
+byte piLength = 0;
+const unsigned long PI_ERROR_MS = 3000;
+
 //////////////////////////////////// FUNCTIONS TO DRAW FACE
 
 void drawEyes(byte eyeType) {
@@ -196,6 +206,7 @@ void loadFaceCharacters() {
 void renderFace(Face face) {
   if (joystickDrawn || pettingDrawn) loadFaceCharacters();
   lcd.clear();
+  piDrawnFrame = -1;
 
   switch (face) {
     case NORMAL:
@@ -382,6 +393,7 @@ int potToPercent(int raw) {
 }
 
 void renderVolume() {
+  piDrawnFrame = -1;
   lcd.setCursor(0, 0);
   lcd.print("Volume:         ");
   lcd.setCursor(8, 0);
@@ -485,6 +497,7 @@ void renderJoystickEyes() {
   lcd.setRGB(100, 200, 80);
   joystickDrawn = true;
   pettingDrawn = false;
+  piDrawnFrame = -1;
   drawnX = joyX;
   drawnY = joyY;
 }
@@ -616,6 +629,120 @@ void renderPetting(unsigned long now) {
   pettingDrawn = true;
   joystickDrawn = false;
   drawnHeartFrame = frame;
+  piDrawnFrame = -1;
+}
+
+//////////////////////////////////// PI LINK
+
+void endPiPhase(unsigned long now) {
+  piPhase = PI_IDLE;
+  lastFaceChange = now;
+  lastBlink = now;
+  blinking = false;
+  if (petOn && !volumeScreen && !joystickActive && !pettingActive) renderFace(currentFace);
+}
+
+void readPi(unsigned long now) {
+  // read a char at a time, readStringUntil would block and freeze the face
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\r') continue;
+    if (c != '\n') {
+      if (piLength < sizeof(piLine) - 1) piLine[piLength++] = c;
+      continue;
+    }
+    piLine[piLength] = '\0';
+    piLength = 0;
+
+    PiPhase next = PI_IDLE; // idle, offline and anything unknown
+    if (strcmp(piLine, "listening") == 0) next = PI_LISTENING;
+    else if (strcmp(piLine, "thinking") == 0) next = PI_THINKING;
+    else if (strcmp(piLine, "acting") == 0) next = PI_ACTING;
+    else if (strcmp(piLine, "speaking") == 0) next = PI_SPEAKING;
+    else if (strcmp(piLine, "error") == 0) next = PI_ERROR;
+
+    if (next == piPhase) continue;
+    if (next == PI_IDLE) {
+      endPiPhase(now);
+      continue;
+    }
+    piPhase = next;
+    piPhaseAt = now;
+    piDrawnFrame = -1;
+    if (petOn && (next == PI_LISTENING || next == PI_ACTING)) startEarFlap();
+  }
+}
+
+void renderPiPhase(unsigned long now) {
+  int frame = 0;
+  if (piPhase == PI_THINKING) frame = ((now - piPhaseAt) / 400) % 4;
+  else if (piPhase == PI_SPEAKING) frame = ((now - piPhaseAt) / 200) % 2;
+  if (frame == piDrawnFrame) return;
+  bool fresh = (piDrawnFrame == -1);
+  piDrawnFrame = frame;
+
+  // eyes and colour only on the first frame, after that just the mouth so it doesnt flicker
+  if (fresh) {
+    if (joystickDrawn || pettingDrawn) loadFaceCharacters();
+    lcd.clear();
+    switch (piPhase) {
+      case PI_LISTENING:
+        lcd.setRGB(0, 180, 255);
+        drawEyes(0);
+        lcd.setCursor(8, 1);
+        lcd.write((uint8_t)6);
+        break;
+      case PI_THINKING:
+        lcd.setRGB(150, 80, 255);
+        drawEyes(0);
+        break;
+      case PI_ACTING:
+        lcd.setRGB(255, 160, 30);
+        drawEyes(2);
+        drawSmile();
+        break;
+      case PI_SPEAKING:
+        lcd.setRGB(100, 200, 80);
+        drawEyes(0);
+        break;
+      case PI_ERROR:
+        lcd.setRGB(255, 30, 30);
+        lcd.setCursor(5, 0);
+        lcd.print("x");
+        lcd.setCursor(10, 0);
+        lcd.print("x");
+        lcd.setCursor(8, 1);
+        lcd.write((uint8_t)6);
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (piPhase == PI_THINKING) {
+    lcd.setCursor(7, 1);
+    for (int i = 0; i < 3; i++) lcd.print(i < frame ? "." : " ");
+  } else if (piPhase == PI_SPEAKING) {
+    if (frame == 0) {
+      drawSmile();
+    } else {
+      lcd.setCursor(7, 1);
+      lcd.print(" ");
+      lcd.write((uint8_t)6);
+      lcd.print(" ");
+    }
+  }
+}
+
+// true while the pi phase has the screen
+bool updatePi(unsigned long now) {
+  if (piPhase == PI_ERROR && now - piPhaseAt >= PI_ERROR_MS) endPiPhase(now);
+  if (piPhase == PI_IDLE) return false;
+
+  lastMotionAt = now; // dont fall asleep mid conversation
+  if (sleeping) setSleeping(false, now);
+  renderPiPhase(now);
+  return true;
 }
 
 // ---------- ON / standby ----------
@@ -663,6 +790,7 @@ void updatePowerSwitch(unsigned long now) {
 }
 
 void setup() {
+  Serial.begin(115200);
   pinMode(POWER_SWITCH_PIN, INPUT_PULLUP);
   pinMode(PIR_PIN, INPUT);
   pinMode(TOUCH_PIN, INPUT);
@@ -707,6 +835,7 @@ void loop() {
   unsigned long now = millis();
   updatePowerSwitch(now);
   now = millis();
+  readPi(now);
   updateMotion(now);
   updateJoystick(now);
   updateTouch(now);
@@ -732,6 +861,7 @@ void loop() {
     }
     return;
   }
+  if (updatePi(now)) return;
   if (sleeping) return;
 
   updateBlink(now);

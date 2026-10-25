@@ -70,7 +70,8 @@ def main():
                     if port is not None:
                         port.close()
                         port = None
-            time.sleep(1)
+            # fast enough that the face changes as soon as you hold the mic
+            time.sleep(0.25)
     except KeyboardInterrupt:
         if port is not None:
             port.close()

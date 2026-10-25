@@ -31,6 +31,11 @@ async function post(path: string, body: unknown) {
   return response;
 }
 
+// lets the pi show it on the wrist, not a big deal if one gets lost
+function tellWrist(phase: "idle" | "listening" | "speaking") {
+  post("/api/phase", { phase }).catch(() => {});
+}
+
 export function App() {
   const [status, setStatus] = useState<Status>("idle");
   const [heard, setHeard] = useState("");
@@ -84,6 +89,7 @@ export function App() {
     recognition.current = rec;
     setHeard("");
     setStatus("listening");
+    tellWrist("listening");
     rec.start();
   }
 
@@ -97,6 +103,7 @@ export function App() {
   async function respond(text: string) {
     if (!text) {
       setStatus("idle");
+      tellWrist("idle");
       return;
     }
     setStatus("thinking");
@@ -124,11 +131,14 @@ export function App() {
     source.connect(context.destination);
     playing.current = source;
     setStatus("speaking");
+    tellWrist("speaking");
     await new Promise<void>((resolve) => {
       source.onended = () => resolve();
       source.start();
     });
     playing.current = null;
+    // cut off by the mic, the wrist is already on listening
+    if (!holding.current) tellWrist("idle");
   }
 
   return (

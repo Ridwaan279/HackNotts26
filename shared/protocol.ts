@@ -3,7 +3,13 @@ export interface Memory {
   text: string;
   createdAt: string;
 }
-export type Phase = "idle" | "thinking" | "acting" | "error";
+export type Phase =
+  | "idle"
+  | "listening"
+  | "thinking"
+  | "acting"
+  | "speaking"
+  | "error";
 export interface PetState {
   phase: Phase;
   lastReply: string;

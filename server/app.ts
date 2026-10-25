@@ -26,13 +26,37 @@ export function createApp({
     lastReply: "Ready when you are.",
   };
   let busy = false;
+  let phoneTimeout: NodeJS.Timeout | undefined;
   const setPhase = (phase: Phase) => {
+    clearTimeout(phoneTimeout);
     state.phase = phase;
   };
   app.disable("x-powered-by");
   app.use(express.json({ limit: "8kb" }));
-  // TODO: push this over a websocket so the wrist isnt polling every second
+  // TODO: push this over a websocket so the wrist isnt polling
   app.get("/api/state", (_req, res) => {
+    res.json(state);
+  });
+  // listening and speaking happen on the phone, so it tells us for the wrist
+  app.post("/api/phase", (req, res) => {
+    const parsed = z
+      .object({ phase: z.enum(["idle", "listening", "speaking"]) })
+      .strict()
+      .safeParse(req.body);
+    if (!parsed.success) {
+      res
+        .status(400)
+        .json({ error: "Phase has to be idle, listening or speaking." });
+      return;
+    }
+    if (busy) {
+      res.status(409).json({ error: "BYTE is in the middle of a turn." });
+      return;
+    }
+    setPhase(parsed.data.phase);
+    // if the phone dies mid sentence the wrist shouldnt be stuck listening
+    if (parsed.data.phase !== "idle")
+      phoneTimeout = setTimeout(() => setPhase("idle"), 60000).unref();
     res.json(state);
   });
   app.get("/api/health", async (_req, res) => {
