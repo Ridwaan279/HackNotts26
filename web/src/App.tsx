@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { Mic } from "lucide-react";
+import { Mic, Watch } from "lucide-react";
 
-import type { Memory, TurnResult } from "../../shared/protocol";
+import type {
+  Memory,
+  TalkEvent,
+  TurnResult,
+  VolumeEvent,
+} from "../../shared/protocol";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { createRecognition, type Recognition } from "@/lib/speech";
+import { createVoiceSession, type VoiceSession } from "@/lib/voice-input";
 import { cn } from "@/lib/utils";
 
 type Status = "idle" | "listening" | "thinking" | "speaking";
@@ -43,9 +48,19 @@ export function App() {
   const [error, setError] = useState("");
   const [memories, setMemories] = useState<number | null>(null);
   const holding = useRef(false);
-  const recognition = useRef<Recognition | null>(null);
+  const recognition = useRef<VoiceSession | null>(null);
   const audio = useRef<AudioContext | null>(null);
   const playing = useRef<AudioBufferSourceNode | null>(null);
+  const gain = useRef<GainNode | null>(null);
+  // set by the volume slider on the wrist
+  const volume = useRef(1);
+  const [wrist, setWrist] = useState(false);
+  const armed = useRef(false);
+  const events = useRef<EventSource | null>(null);
+  const wakeLock = useRef<WakeLockSentinel | null>(null);
+  // the wrist events come in outside react, so they need the newest start / stop
+  const handlers = useRef({ startListening, stopListening });
+  handlers.current = { startListening, stopListening };
 
   // the api only returns the newest 20, so 20 means 20+
   async function loadMemories() {
@@ -59,57 +74,126 @@ export function App() {
     void loadMemories();
   }, []);
 
+  useEffect(() => {
+    const onVisible = () => {
+      if (!armed.current) return;
+      if (document.visibilityState === "visible") {
+        connectWrist();
+        void keepAwake();
+      } else {
+        if (recognition.current) cancelListening();
+        events.current?.close();
+        events.current = null;
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      events.current?.close();
+      const session = recognition.current;
+      recognition.current = null;
+      holding.current = false;
+      session?.cancel();
+    };
+  }, []);
+
+  async function keepAwake() {
+    try {
+      wakeLock.current = await navigator.wakeLock.request("screen");
+    } catch {
+    }
+  }
+
+  function connectWrist() {
+    if (events.current) return;
+    const source = new EventSource("/api/events");
+    source.addEventListener("talk", (event) => {
+      const { pressed } = JSON.parse(event.data) as TalkEvent;
+      if (pressed) handlers.current.startListening();
+      else handlers.current.stopListening();
+    });
+    source.addEventListener("volume", (event) => {
+      const { level } = JSON.parse(event.data) as VolumeEvent;
+      volume.current = level / 100;
+      if (gain.current) gain.current.gain.value = volume.current;
+    });
+    events.current = source;
+  }
+
+  async function toggleWrist() {
+    if (armed.current) {
+      if (recognition.current) cancelListening();
+      armed.current = false;
+      events.current?.close();
+      events.current = null;
+      void wakeLock.current?.release();
+      wakeLock.current = null;
+      setWrist(false);
+      return;
+    }
+    setError("");
+    audio.current ??= new AudioContext();
+    void audio.current.resume();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+    } catch {
+      setError("Mic blocked. Open the app over https and allow the mic.");
+      return;
+    }
+    armed.current = true;
+    connectWrist();
+    setWrist(true);
+    await keepAwake();
+  }
+
+  function cancelListening() {
+    const session = recognition.current;
+    recognition.current = null;
+    holding.current = false;
+    session?.cancel();
+    setStatus("idle");
+    tellWrist("idle");
+  }
+
   function startListening() {
-    if (holding.current || status === "thinking") return;
-    holding.current = true;
+    if (holding.current || recognition.current || status === "thinking") return;
     setError("");
     playing.current?.stop();
-    // ios wont play the reply later unless audio gets unlocked on a tap
     audio.current ??= new AudioContext();
     void audio.current.resume();
 
-    const rec = createRecognition();
-    if (!rec) {
-      holding.current = false;
-      setError("This browser can't do speech recognition.");
+    const session = createVoiceSession(navigator.language, {
+      onStart() {
+        tellWrist("listening");
+      },
+      onText(text) {
+        setHeard(text);
+      },
+      onError(message) {
+        setError(message);
+      },
+      onFinish(text) {
+        if (recognition.current !== session) return;
+        recognition.current = null;
+        holding.current = false;
+        void respond(text);
+      },
+    });
+    if (!session) {
+      setError("This browser can't do speech recognition. Try Chrome on Android.");
+      tellWrist("idle");
       return;
     }
-    let final = "";
-    let latest = "";
-    rec.lang = navigator.language;
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.onresult = (event) => {
-      let interim = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        if (result.isFinal) final += `${result[0].transcript} `;
-        else interim += result[0].transcript;
-      }
-      latest = `${final}${interim}`.trim();
-      setHeard(latest);
-    };
-    rec.onerror = (event) => {
-      if (event.error === "not-allowed")
-        setError("Mic blocked. Open the app over https and allow the mic.");
-      else if (event.error !== "no-speech" && event.error !== "aborted")
-        setError(`Speech recognition failed: ${event.error}`);
-    };
-    rec.onend = () => {
-      recognition.current = null;
-      void respond(latest);
-    };
-    recognition.current = rec;
+    recognition.current = session;
+    holding.current = true;
     setHeard("");
     setStatus("listening");
-    tellWrist("listening");
-    rec.start();
+    session.start();
   }
 
   function stopListening() {
-    if (!holding.current) return;
     holding.current = false;
-    // onend does the sending once the last words come in
     recognition.current?.stop();
   }
 
@@ -130,7 +214,6 @@ export function App() {
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
     } finally {
-      // if the mic got pressed again mid reply leave it on listening
       setStatus((current) => (current === "listening" ? current : "idle"));
     }
   }
@@ -142,7 +225,12 @@ export function App() {
     const buffer = await context.decodeAudioData(await response.arrayBuffer());
     const source = context.createBufferSource();
     source.buffer = buffer;
-    source.connect(context.destination);
+    if (!gain.current) {
+      gain.current = context.createGain();
+      gain.current.connect(context.destination);
+    }
+    gain.current.gain.value = volume.current;
+    source.connect(gain.current);
     playing.current = source;
     setStatus("speaking");
     tellWrist("speaking");
@@ -151,7 +239,6 @@ export function App() {
       source.start();
     });
     playing.current = null;
-    // cut off by the mic, the wrist is already on listening
     if (!holding.current) tellWrist("idle");
   }
 
@@ -215,6 +302,15 @@ export function App() {
           <Mic />
         </Button>
         <span className="text-muted-foreground text-sm">{labels[status]}</span>
+        <Button
+          variant={wrist ? "secondary" : "outline"}
+          size="sm"
+          aria-pressed={wrist}
+          onClick={() => void toggleWrist()}
+        >
+          <Watch />
+          {wrist ? "Wrist mic on" : "Use wrist mic"}
+        </Button>
       </footer>
     </div>
   );

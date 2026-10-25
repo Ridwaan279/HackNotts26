@@ -12,7 +12,8 @@
     "dev:web": "vite --config web/vite.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json",
     "build": "npm run typecheck && tsc -p tsconfig.json && vite build --config web/vite.config.ts",
-    "start": "node --env-file-if-exists=.env dist/server/index.js"
+    "start": "node --env-file-if-exists=.env dist/server/index.js",
+    "test": "node --import tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

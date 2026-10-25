@@ -13,6 +13,14 @@ export type Phase =
 export interface PetState {
   phase: Phase;
   lastReply: string;
+  phaseRevision?: number;
+}
+// from the wrist, pushed to the phone over /api/events
+export interface TalkEvent {
+  pressed: boolean;
+}
+export interface VolumeEvent {
+  level: number;
 }
 export interface ToolTrace {
   name: string;
