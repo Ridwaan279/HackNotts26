@@ -6,6 +6,7 @@ import type { Health, PetState, Phase } from "../shared/protocol.js";
 import { runTurn } from "./agent.js";
 import type { Config } from "./config.js";
 import type { Speak } from "./elevenlabs.js";
+import { checkHermes, type Turn } from "./hermes.js";
 import type { MemoryTools } from "./mcp/client.js";
 import { checkOllama, type ModelChat } from "./ollama.js";
 
@@ -14,11 +15,14 @@ export function createApp({
   chat,
   config,
   speak,
+  turn = (message, onPhase) => runTurn(message, tools, chat, onPhase),
 }: {
   tools: MemoryTools;
   chat: ModelChat;
   config: Config;
   speak?: Speak;
+  // hermes when its set up, otherwise our own loop straight to ollama
+  turn?: Turn;
 }) {
   const app = express();
   const state: PetState = {
@@ -60,11 +64,13 @@ export function createApp({
     res.json(state);
   });
   app.get("/api/health", async (_req, res) => {
-    const error = await checkOllama(config);
+    const error = config.hermes
+      ? await checkHermes(config.hermes)
+      : await checkOllama(config);
     const health: Health = {
       ok: !error,
-      model: config.model,
-      ollamaUrl: config.ollamaUrl,
+      model: config.hermes ? "hermes-agent" : config.model,
+      ollamaUrl: config.hermes?.url ?? config.ollamaUrl,
       tools: tools.definitions.map((tool) => tool.name),
       ...(error ? { error } : {}),
     };
@@ -102,7 +108,7 @@ export function createApp({
     }
     busy = true;
     try {
-      const result = await runTurn(parsed.data.message, tools, chat, setPhase);
+      const result = await turn(parsed.data.message, setPhase);
       state.lastReply = result.reply;
       setPhase(
         result.trace.some((item) => item.status === "error") ? "error" : "idle",

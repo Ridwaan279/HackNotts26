@@ -12,7 +12,7 @@ const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
 // the small model wont call list_memories for "whats my name", so it gets told up front
-async function recall(tools: MemoryTools) {
+export async function recall(tools: MemoryTools) {
   try {
     const { memories } = (await tools.callTool("list_memories", {
       limit: 10,

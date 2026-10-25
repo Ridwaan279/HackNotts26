@@ -22,6 +22,16 @@ const settings = z.object({
   // mkcert files, phone wont give the mic without https
   TLS_CERT: z.string().optional(),
   TLS_KEY: z.string().optional(),
+  // set these to use hermes agent as the brain, empty means talk to ollama directly
+  HERMES_URL: z.string().optional(),
+  HERMES_KEY: z.string().optional(),
+  HERMES_SESSION: z.string().min(1).default("byte"),
+  HERMES_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1000)
+    .max(900000)
+    .default(300000),
 });
 
 export function readConfig(env: NodeJS.ProcessEnv = process.env) {
@@ -31,6 +41,11 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
     throw new Error("Ollama must use an HTTP(S) URL.");
   if (!value.TLS_CERT !== !value.TLS_KEY)
     throw new Error("Set both TLS_CERT and TLS_KEY, or neither.");
+  if (value.HERMES_URL) {
+    new URL(value.HERMES_URL); // throws on a typo
+    if (!value.HERMES_KEY)
+      throw new Error("Set HERMES_KEY to the API_SERVER_KEY in ~/.hermes/.env.");
+  }
   return {
     host: value.HOST,
     port: value.PORT,
@@ -48,6 +63,15 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env) {
     tls:
       value.TLS_CERT && value.TLS_KEY
         ? { cert: resolve(value.TLS_CERT), key: resolve(value.TLS_KEY) }
+        : undefined,
+    hermes:
+      value.HERMES_URL && value.HERMES_KEY
+        ? {
+            url: value.HERMES_URL.replace(/\/$/, ""),
+            key: value.HERMES_KEY,
+            session: value.HERMES_SESSION,
+            timeoutMs: value.HERMES_TIMEOUT_MS,
+          }
         : undefined,
   };
 }

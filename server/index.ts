@@ -3,6 +3,7 @@ import { createServer } from "node:https";
 import { createApp } from "./app.js";
 import { readConfig } from "./config.js";
 import { createElevenLabsSpeech } from "./elevenlabs.js";
+import { createHermesTurn } from "./hermes.js";
 import { connectMemoryTools } from "./mcp/client.js";
 import { createOllamaChat } from "./ollama.js";
 
@@ -14,11 +15,16 @@ const { app } = createApp({
   tools,
   chat: createOllamaChat(config),
   speak,
+  turn: config.hermes ? createHermesTurn(config.hermes, tools) : undefined,
 });
 const scheme = config.tls ? "https" : "http";
 const onListening = () => {
   console.log(`BYTE API + built app: ${scheme}://${config.host}:${config.port}`);
-  console.log(`Model: ${config.model} at ${config.ollamaUrl}`);
+  console.log(
+    config.hermes
+      ? `Brain: Hermes Agent at ${config.hermes.url} (session ${config.hermes.session})`
+      : `Model: ${config.model} at ${config.ollamaUrl}`,
+  );
   console.log(`Voice: ${speak ? `ElevenLabs ${config.elevenLabs.voiceId}` : "off"}`);
   console.log(`SQLite (owned by MCP): ${config.dbPath}`);
 };

@@ -1,4 +1,4 @@
-// only the mcp child opens the db
+// only mcp children open the db (byte's own and the one hermes starts)
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -11,6 +11,8 @@ const limitSchema = z.number().int().min(1).max(20);
 export function createMemoryStore(path: string) {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
+  // two processes share the file, wait for the other one instead of failing
+  db.exec("PRAGMA busy_timeout = 5000");
   db.exec(`CREATE TABLE IF NOT EXISTS memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     text TEXT NOT NULL,
