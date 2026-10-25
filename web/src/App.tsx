@@ -9,7 +9,7 @@ import type {
 } from "../../shared/protocol";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { createRecognition, type Recognition } from "@/lib/speech";
+import { createVoiceSession, type VoiceSession } from "@/lib/voice-input";
 import { cn } from "@/lib/utils";
 
 type Status = "idle" | "listening" | "thinking" | "speaking";
@@ -48,7 +48,7 @@ export function App() {
   const [error, setError] = useState("");
   const [memories, setMemories] = useState<number | null>(null);
   const holding = useRef(false);
-  const recognition = useRef<Recognition | null>(null);
+  const recognition = useRef<VoiceSession | null>(null);
   const audio = useRef<AudioContext | null>(null);
   const playing = useRef<AudioBufferSourceNode | null>(null);
   const gain = useRef<GainNode | null>(null);
@@ -81,6 +81,7 @@ export function App() {
         connectWrist();
         void keepAwake();
       } else {
+        if (recognition.current) cancelListening();
         events.current?.close();
         events.current = null;
       }
@@ -89,6 +90,10 @@ export function App() {
     return () => {
       document.removeEventListener("visibilitychange", onVisible);
       events.current?.close();
+      const session = recognition.current;
+      recognition.current = null;
+      holding.current = false;
+      session?.cancel();
     };
   }, []);
 
@@ -117,6 +122,7 @@ export function App() {
 
   async function toggleWrist() {
     if (armed.current) {
+      if (recognition.current) cancelListening();
       armed.current = false;
       events.current?.close();
       events.current = null;
@@ -141,55 +147,52 @@ export function App() {
     await keepAwake();
   }
 
+  function cancelListening() {
+    const session = recognition.current;
+    recognition.current = null;
+    holding.current = false;
+    session?.cancel();
+    setStatus("idle");
+    tellWrist("idle");
+  }
+
   function startListening() {
-    if (holding.current || status === "thinking") return;
-    holding.current = true;
+    if (holding.current || recognition.current || status === "thinking") return;
     setError("");
     playing.current?.stop();
     audio.current ??= new AudioContext();
     void audio.current.resume();
 
-    const rec = createRecognition();
-    if (!rec) {
-      holding.current = false;
-      setError("This browser can't do speech recognition.");
+    const session = createVoiceSession(navigator.language, {
+      onStart() {
+        tellWrist("listening");
+      },
+      onText(text) {
+        setHeard(text);
+      },
+      onError(message) {
+        setError(message);
+      },
+      onFinish(text) {
+        if (recognition.current !== session) return;
+        recognition.current = null;
+        holding.current = false;
+        void respond(text);
+      },
+    });
+    if (!session) {
+      setError("This browser can't do speech recognition. Try Chrome on Android.");
+      tellWrist("idle");
       return;
     }
-    let latest = "";
-    rec.lang = navigator.language;
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.onresult = (event) => {
-      let text = "";
-      for (let i = 0; i < event.results.length; i++) {
-        const part = event.results[i][0].transcript.trim();
-        const lower = part.toLowerCase();
-        const sofar = text.toLowerCase();
-        if (lower.startsWith(sofar)) text = part;
-        else if (!sofar.startsWith(lower)) text = `${text} ${part}`;
-      }
-      latest = text;
-      setHeard(latest);
-    };
-    rec.onerror = (event) => {
-      if (event.error === "not-allowed")
-        setError("Mic blocked. Open the app over https and allow the mic.");
-      else if (event.error !== "no-speech" && event.error !== "aborted")
-        setError(`Speech recognition failed: ${event.error}`);
-    };
-    rec.onend = () => {
-      recognition.current = null;
-      void respond(latest);
-    };
-    rec.onstart = () => tellWrist("listening");
-    recognition.current = rec;
+    recognition.current = session;
+    holding.current = true;
     setHeard("");
     setStatus("listening");
-    rec.start();
+    session.start();
   }
 
   function stopListening() {
-    if (!holding.current) return;
     holding.current = false;
     recognition.current?.stop();
   }

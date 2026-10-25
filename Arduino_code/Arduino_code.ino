@@ -1,6 +1,7 @@
 #include <Wire.h>
 #include "rgb_lcd.h"
 #include <Servo.h>
+#include <string.h>
 
 rgb_lcd lcd;
 
@@ -92,13 +93,16 @@ enum Face {
   SLEEPY
 };
 
+void renderFace(Face face);
+void showFace(Face face);
+
 Face currentFace = NORMAL;
 
 // Analogue joystick
 const byte JOY_X_PIN = A1;
 const byte JOY_Y_PIN = A2;
 const int JOY_DEADZONE = 90;
-const int JOY_RANGE = 280; 
+const int JOY_RANGE = 512; 
 const bool INVERT_JOY_X = false;
 const bool INVERT_JOY_Y = false;
 const unsigned long JOY_HOLD_MS = 1500;
@@ -111,14 +115,13 @@ unsigned long lastJoystickSample = 0;
 unsigned long lastJoystickActivity = 0;
 int drawnX = 999, drawnY = 999;
 
-// Talk, hold the stick down for half a second, keep holding while you talk, let go to send
-const int JOY_TALK_TILT = 200; 
-const int JOY_CLICK_RAW = 1000;
+// Hold SW on D9 to talk. Release to send; two short clicks start disco.
 const unsigned long TALK_HOLD_MS = 500;
-const unsigned long TALK_READY_MS = 2500; 
+const unsigned long TALK_READY_MS = 8000;
 bool talkHeld = false;
-bool talkReady = false; 
-unsigned long talkTiltAt = 0;
+bool talkReady = false;
+bool talkAttempted = false;
+unsigned long buttonPressedAt = 0;
 unsigned long talkStartedAt = 0;
 
 // Disco, double click the stick, runs for 5 seconds or till you double click again
@@ -153,6 +156,7 @@ unsigned long lastEarStep = 0;
 // Pi link, the pi sends one word per line over usb serial when the phase changes
 // idle, listening, thinking, acting, speaking, error, offline
 enum PiPhase { PI_IDLE, PI_LISTENING, PI_THINKING, PI_ACTING, PI_SPEAKING, PI_ERROR };
+void setPiPhase(PiPhase next, unsigned long now);
 PiPhase piPhase = PI_IDLE;
 unsigned long piPhaseAt = 0;
 int piDrawnFrame = -1;
@@ -405,7 +409,7 @@ void updateMotion(unsigned long now) {
   }
 
   if (!petOn) return;
-  if (discoMode) {
+  if (discoMode || talkHeld || piPhase != PI_IDLE) {
     lastMotionAt = now;
     return;
   }
@@ -566,29 +570,47 @@ void toggleDisco(unsigned long now) {
 }
 
 void readJoystickButton(unsigned long now) {
-  bool down = (digitalRead(JOY_BUTTON_PIN) == LOW);
+  bool down = false;
+  if (digitalRead(JOY_BUTTON_PIN) == LOW) {
+    down = true;
+  }
   if (down != joyButtonReading) {
     joyButtonReading = down;
     joyButtonChangedAt = now;
   }
 
-  // only count presses that start after the pet is on
-  if (petOn && !down && !joyButtonStable) joyButtonArmed = true;
-  if (waitingForSecondPress && !joyButtonStable && now - firstPressAt > JOY_DOUBLE_PRESS_MS) {
-    waitingForSecondPress = false;
+  if (petOn && !down && !joyButtonStable) {
+    joyButtonArmed = true;
   }
-
-  if (now - joyButtonChangedAt < JOY_BUTTON_DEBOUNCE_MS || down == joyButtonStable) return;
-  joyButtonStable = down;
-  if (!petOn || !joyButtonArmed) return;
-
-  if (!down) {
-    // gap to the second press counts from letting go of the first
-    if (waitingForSecondPress) firstPressAt = now;
+  if (waitingForSecondPress && !joyButtonStable) {
+    if (now - firstPressAt > JOY_DOUBLE_PRESS_MS) {
+      waitingForSecondPress = false;
+    }
+  }
+  if (now - joyButtonChangedAt < JOY_BUTTON_DEBOUNCE_MS) {
+    return;
+  }
+  if (down == joyButtonStable) {
     return;
   }
 
-  if (waitingForSecondPress) {
+  joyButtonStable = down;
+  if (!petOn || !joyButtonArmed) {
+    return;
+  }
+
+  if (down) {
+    buttonPressedAt = now;
+    talkAttempted = false;
+    return;
+  }
+
+  // Long holds are never counted as disco clicks.
+  if (talkHeld || talkAttempted || now - buttonPressedAt >= TALK_HOLD_MS) {
+    waitingForSecondPress = false;
+    return;
+  }
+  if (waitingForSecondPress && now - firstPressAt <= JOY_DOUBLE_PRESS_MS) {
     waitingForSecondPress = false;
     toggleDisco(now);
   } else {
@@ -641,43 +663,51 @@ void setPiPhase(PiPhase next, unsigned long now) {
   piDrawnFrame = -1;
 }
 
-// tells the pi talk / release, the pi passes it to the phone mic
-void updateTalk(int rawX, unsigned long now) {
-  // needs less tilt to stay on than to start so it doesnt flicker on the edge
-  int tilt = talkHeld ? JOY_TALK_TILT / 2 : JOY_TALK_TILT;
-  if (rawX >= JOY_CLICK_RAW || joyY < tilt) {
-    talkTiltAt = 0;
-    if (talkHeld && petOn) {
+void updateTalk(unsigned long now) {
+  if (!petOn || discoMode || !joyButtonStable) {
+    if (talkHeld) {
       Serial.print("release\n");
-      // phone never answered so nothing else will clear our listening face
-      if (!talkReady && piPhase == PI_LISTENING) endPiPhase(now);
+      if (!talkReady && piPhase == PI_LISTENING) {
+        endPiPhase(now);
+      }
     }
     talkHeld = false;
     return;
   }
-  if (talkTiltAt == 0) talkTiltAt = now;
-  if (!petOn) return;
 
+  if (!joyButtonArmed) {
+    return;
+  }
   if (talkHeld) {
-    // phone shut, in the background or not on wrist mic
-    if (!talkReady && piPhase == PI_LISTENING && now - talkStartedAt >= TALK_READY_MS) {
+    lastMotionAt = now;
+    if (!talkReady && now - talkStartedAt >= TALK_READY_MS) {
+      Serial.print("release\n");
+      talkHeld = false;
       setPiPhase(PI_ERROR, now);
       startSound(SOUND_SLEEP);
     }
     return;
   }
-  if (now - talkTiltAt < TALK_HOLD_MS) return;
+  if (talkAttempted || now - buttonPressedAt < TALK_HOLD_MS) {
+    return;
+  }
+
+  talkAttempted = true;
+  waitingForSecondPress = false;
+  if (piPhase == PI_THINKING || piPhase == PI_ACTING) {
+    return;
+  }
 
   talkHeld = true;
   talkReady = false;
   talkStartedAt = now;
   Serial.print("talk\n");
-  // little click now, the proper chirp waits till the phone is actually listening
   startSound(SOUND_JOYSTICK);
   lastMotionAt = now;
+  sleeping = false;
+  currentFace = NORMAL;
   joystickActive = false;
   blinking = false;
-  // listening face straight away, the phone takes a moment to catch up
   setPiPhase(PI_LISTENING, now);
 }
 
@@ -691,12 +721,15 @@ void updateJoystick(unsigned long now) {
   joyY = originalX;
   // stick does nothing while the disco is on, talking included
   if (discoMode) {
-    talkTiltAt = 0;
     joyX = joyY = 0;
     return;
   }
-  updateTalk(rawX, now);
-  if (talkHeld) joyX = joyY = 0; // eyes stay still while it listens
+  if (talkHeld) {
+    joyX = 0;
+    joyY = 0;
+    joystickActive = false;
+    return;
+  }
   if (!petOn) return;
 
   bool moved = (joyX != 0 || joyY != 0);
@@ -945,7 +978,9 @@ void setPetPower(bool turnOn) {
   if (!turnOn && petOn && talkHeld) Serial.print("release\n");
   if (talkHeld && !talkReady && piPhase == PI_LISTENING) piPhase = PI_IDLE;
   talkHeld = false;
-  talkTiltAt = 0;
+  talkAttempted = false;
+  talkReady = false;
+  buttonPressedAt = 0;
   petOn = turnOn;
   discoMode = false;
   discoDrawn = false;
@@ -1042,6 +1077,7 @@ void loop() {
   now = millis();
   readJoystickButton(now);
   checkDiscoTimer(now);
+  updateTalk(now);
   readPi(now);
   updateMotion(now);
   updateJoystick(now);
@@ -1060,6 +1096,10 @@ void loop() {
 
   if (discoMode) {
     updateDisco(now);
+    return;
+  }
+  if (talkHeld) {
+    updatePi(now);
     return;
   }
   if (pettingActive) {

@@ -30,12 +30,14 @@ export function createApp({
   const state: PetState = {
     phase: "idle",
     lastReply: "Ready when you are.",
+    phaseRevision: 0,
   };
   let busy = false;
   let phoneTimeout: NodeJS.Timeout | undefined;
   const setPhase = (phase: Phase) => {
     clearTimeout(phoneTimeout);
     state.phase = phase;
+    state.phaseRevision = (state.phaseRevision ?? 0) + 1;
   };
   const phones = new Set<Response>();
   const push = (phone: Response, name: string, data: unknown) =>

@@ -53,6 +53,7 @@ def main():
 
     previous = None
     phase = None
+    phase_revision = None
     polled_at = 0
     port = None
     sent = None
@@ -64,15 +65,17 @@ def main():
             if time.monotonic() - polled_at >= 0.25:
                 polled_at = time.monotonic()
                 try:
-                    with urllib.request.urlopen(base + "/api/state", timeout=3, context=context) as response:
+                    with urllib.request.urlopen(base + "/api/state", timeout=1, context=context) as response:
                         state = json.load(response)
                     phase = state["phase"]
+                    phase_revision = state.get("phaseRevision")
                     current = (phase, state["lastReply"])
                     if current != previous:
                         print(f"[{current[0]}] {current[1]}", flush=True)
                         previous = current
                 except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as error:
                     phase = "offline"
+                    phase_revision = None
                     if previous != "offline":
                         print(f"[offline] {error}", flush=True)
                         previous = "offline"
@@ -84,9 +87,10 @@ def main():
                         sent = None  # the arduino just reset, send the phase again
                         buffer = b""
                         print(f"[serial] connected to {port_path}", flush=True)
-                    if phase is not None and phase != sent:
+                    phase_stamp = (phase, phase_revision)
+                    if phase is not None and phase_stamp != sent:
                         port.write(f"{phase}\n".encode())
-                        sent = phase
+                        sent = phase_stamp
                     # the arduino sends talk / release when the stick is held down, volume N when the slider moves
                     if port.in_waiting:
                         buffer += port.read(port.in_waiting)
