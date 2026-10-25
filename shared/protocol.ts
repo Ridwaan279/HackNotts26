@@ -14,6 +14,13 @@ export interface PetState {
   phase: Phase;
   lastReply: string;
 }
+// from the wrist, pushed to the phone over /api/events
+export interface TalkEvent {
+  pressed: boolean;
+}
+export interface VolumeEvent {
+  level: number;
+}
 export interface ToolTrace {
   name: string;
   arguments: Record<string, unknown>;

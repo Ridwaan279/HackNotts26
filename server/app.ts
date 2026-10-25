@@ -1,8 +1,14 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import express, { type ErrorRequestHandler } from "express";
+import express, { type ErrorRequestHandler, type Response } from "express";
 import { z } from "zod";
-import type { Health, PetState, Phase } from "../shared/protocol.js";
+import type {
+  Health,
+  PetState,
+  Phase,
+  TalkEvent,
+  VolumeEvent,
+} from "../shared/protocol.js";
 import { runTurn } from "./agent.js";
 import type { Config } from "./config.js";
 import type { Speak } from "./elevenlabs.js";
@@ -31,13 +37,18 @@ export function createApp({
     clearTimeout(phoneTimeout);
     state.phase = phase;
   };
+  const phones = new Set<Response>();
+  const push = (phone: Response, name: string, data: unknown) =>
+    phone.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+  let volume: VolumeEvent | undefined;
+  setInterval(() => {
+    for (const phone of phones) phone.write(": ping\n\n");
+  }, 20000).unref();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "8kb" }));
-  // TODO: push this over a websocket so the wrist isnt polling
   app.get("/api/state", (_req, res) => {
     res.json(state);
   });
-  // listening and speaking happen on the phone, so it tells us for the wrist
   app.post("/api/phase", (req, res) => {
     const parsed = z
       .object({ phase: z.enum(["idle", "listening", "speaking"]) })
@@ -58,6 +69,48 @@ export function createApp({
     if (parsed.data.phase !== "idle")
       phoneTimeout = setTimeout(() => setPhase("idle"), 60000).unref();
     res.json(state);
+  });
+  app.get("/api/events", (req, res) => {
+    res.set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+    res.flushHeaders();
+    phones.add(res);
+    if (volume) push(res, "volume", volume);
+    req.on("close", () => phones.delete(res));
+  });
+  app.post("/api/talk", (req, res) => {
+    const parsed = z
+      .object({ pressed: z.boolean() })
+      .strict()
+      .safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Send pressed as true or false." });
+      return;
+    }
+    const phone = [...phones].at(-1);
+    if (!phone) {
+      if (parsed.data.pressed && !busy) {
+        setPhase("error");
+        phoneTimeout = setTimeout(() => setPhase("idle"), 3000).unref();
+      }
+      res.status(503).json({ error: "No phone has the wrist mic on." });
+      return;
+    }
+    const event: TalkEvent = { pressed: parsed.data.pressed };
+    push(phone, "talk", event);
+    res.json(event);
+  });
+  app.post("/api/volume", (req, res) => {
+    const parsed = z
+      .object({ level: z.number().int().min(0).max(100) })
+      .strict()
+      .safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Send level from 0 to 100." });
+      return;
+    }
+    volume = parsed.data;
+    for (const phone of phones) push(phone, "volume", volume);
+    res.json(volume);
   });
   app.get("/api/health", async (_req, res) => {
     const error = await checkOllama(config);

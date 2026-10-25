@@ -1,4 +1,3 @@
-// ts doesnt ship types for SpeechRecognition, only typing the bits we use
 export interface Recognition {
   lang: string;
   continuous: boolean;
@@ -13,6 +12,7 @@ export interface Recognition {
       }) => void)
     | null;
   onerror: ((event: { error: string }) => void) | null;
+  onstart: (() => void) | null;
   onend: (() => void) | null;
 }
 

@@ -111,6 +111,34 @@ unsigned long lastJoystickSample = 0;
 unsigned long lastJoystickActivity = 0;
 int drawnX = 999, drawnY = 999;
 
+// Talk, hold the stick down for half a second, keep holding while you talk, let go to send
+const int JOY_TALK_TILT = 200; 
+const int JOY_CLICK_RAW = 1000;
+const unsigned long TALK_HOLD_MS = 500;
+const unsigned long TALK_READY_MS = 2500; 
+bool talkHeld = false;
+bool talkReady = false; 
+unsigned long talkTiltAt = 0;
+unsigned long talkStartedAt = 0;
+
+// Disco, double click the stick, runs for 5 seconds or till you double click again
+const byte JOY_BUTTON_PIN = 9;
+const unsigned long JOY_BUTTON_DEBOUNCE_MS = 15;
+const unsigned long JOY_DOUBLE_PRESS_MS = 800;
+const unsigned long DISCO_STEP_MS = 600;
+const unsigned long DISCO_DURATION_MS = 5000;
+unsigned long discoStartedAt = 0;
+bool discoMode = false;
+bool discoDrawn = false;
+bool joyButtonStable = false;
+bool joyButtonReading = false;
+bool joyButtonArmed = false;
+bool waitingForSecondPress = false;
+unsigned long joyButtonChangedAt = 0;
+unsigned long firstPressAt = 0;
+unsigned long confetti = 0;
+byte boogie = 0;
+
 unsigned long lastFaceChange = 0;
 unsigned long lastBlink = 0;
 unsigned long blinkStarted = 0;
@@ -356,7 +384,7 @@ void setSleeping(bool shouldSleep, unsigned long now) {
   lastFaceChange = now;
   lastBlink = now;
 
-  if (!volumeScreen && !joystickActive && !pettingActive) renderFace(currentFace);
+  if (!volumeScreen && !joystickActive && !pettingActive && !discoMode) renderFace(currentFace);
 
   if (sleeping) {
     earsMoving = false;
@@ -377,6 +405,10 @@ void updateMotion(unsigned long now) {
   }
 
   if (!petOn) return;
+  if (discoMode) {
+    lastMotionAt = now;
+    return;
+  }
 
   if (motion) {
     lastMotionAt = now;
@@ -386,6 +418,13 @@ void updateMotion(unsigned long now) {
   }
 }
 
+// the voice comes out of the phone, so the slider has to go there too
+void sendVolume() {
+  Serial.print("volume ");
+  Serial.print(volumePercent);
+  Serial.print("\n");
+}
+
 int potToPercent(int raw) {
   if (raw <= 10) return 0;
   if (raw >= 1013) return 100;
@@ -393,6 +432,7 @@ int potToPercent(int raw) {
 }
 
 void renderVolume() {
+  discoDrawn = false;
   piDrawnFrame = -1;
   lcd.setCursor(0, 0);
   lcd.print("Volume:         ");
@@ -422,6 +462,7 @@ void updatePot(unsigned long now) {
       (difference < VOLUME_DEADBAND && !atEndpoint)) return;
 
   volumePercent = candidate;
+  sendVolume();
   if (!petOn) return;
 
   if (!volumeScreen) {
@@ -443,7 +484,7 @@ void updateVolumeScreen(unsigned long now) {
     lastFaceChange = now;
     lastBlink = now;
     blinking = false;
-    if (!joystickActive && !pettingActive) renderFace(currentFace);
+    if (!joystickActive && !pettingActive && !discoMode) renderFace(currentFace);
     // Force a full joystick redraw if it is still active.
     drawnX = 999;
     drawnHeartFrame = -1;
@@ -502,13 +543,160 @@ void renderJoystickEyes() {
   drawnY = joyY;
 }
 
+void toggleDisco(unsigned long now) {
+  if (!discoMode && talkHeld) return; // dont cut someone off mid sentence
+  discoMode = !discoMode;
+  discoStartedAt = now;
+  discoDrawn = false;
+  joystickActive = false;
+  blinking = false;
+  earsMoving = false;
+  sleeping = false;
+  if (currentFace == SLEEPY) currentFace = NORMAL;
+  lastMotionAt = now;
+  lastFaceChange = now;
+  lastBlink = now;
+  boogie = 0;
+  confetti = now;
+  drawnX = 999;
+  drawnHeartFrame = -1;
+  startSound(SOUND_JOYSTICK);
+
+  if (!discoMode && !volumeScreen && !pettingActive) renderFace(currentFace);
+}
+
+void readJoystickButton(unsigned long now) {
+  bool down = (digitalRead(JOY_BUTTON_PIN) == LOW);
+  if (down != joyButtonReading) {
+    joyButtonReading = down;
+    joyButtonChangedAt = now;
+  }
+
+  // only count presses that start after the pet is on
+  if (petOn && !down && !joyButtonStable) joyButtonArmed = true;
+  if (waitingForSecondPress && !joyButtonStable && now - firstPressAt > JOY_DOUBLE_PRESS_MS) {
+    waitingForSecondPress = false;
+  }
+
+  if (now - joyButtonChangedAt < JOY_BUTTON_DEBOUNCE_MS || down == joyButtonStable) return;
+  joyButtonStable = down;
+  if (!petOn || !joyButtonArmed) return;
+
+  if (!down) {
+    // gap to the second press counts from letting go of the first
+    if (waitingForSecondPress) firstPressAt = now;
+    return;
+  }
+
+  if (waitingForSecondPress) {
+    waitingForSecondPress = false;
+    toggleDisco(now);
+  } else {
+    waitingForSecondPress = true;
+    firstPressAt = now;
+  }
+}
+
+void checkDiscoTimer(unsigned long now) {
+  if (discoMode && now - discoStartedAt >= DISCO_DURATION_MS) toggleDisco(now);
+}
+
+void updateDisco(unsigned long now) {
+  if (discoDrawn && now - confetti < DISCO_STEP_MS) return;
+
+  const byte colours[6][3] = {
+    {255, 25, 65}, {25, 80, 255}, {180, 25, 255},
+    {25, 220, 100}, {255, 140, 20}, {25, 180, 220}
+  };
+
+  if (!discoDrawn) {
+    piDrawnFrame = -1;
+    loadFaceCharacters();
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("   DISCO MODE   ");
+  } else {
+    boogie = (boogie + 1) % 6;
+  }
+
+  lcd.setRGB(colours[boogie][0], colours[boogie][1], colours[boogie][2]);
+  lcd.setCursor(0, 1);
+  lcd.print("                ");
+  int wiggle = boogie % 2;
+  lcd.setCursor(4 + wiggle, 1);
+  lcd.write((uint8_t)2);
+  lcd.setCursor(10 + wiggle, 1);
+  lcd.write((uint8_t)2);
+  lcd.setCursor(7 + wiggle, 1);
+  lcd.print("u");
+  discoDrawn = true;
+  confetti = now;
+}
+
+void endPiPhase(unsigned long now);
+
+void setPiPhase(PiPhase next, unsigned long now) {
+  piPhase = next;
+  piPhaseAt = now;
+  piDrawnFrame = -1;
+}
+
+// tells the pi talk / release, the pi passes it to the phone mic
+void updateTalk(int rawX, unsigned long now) {
+  // needs less tilt to stay on than to start so it doesnt flicker on the edge
+  int tilt = talkHeld ? JOY_TALK_TILT / 2 : JOY_TALK_TILT;
+  if (rawX >= JOY_CLICK_RAW || joyY < tilt) {
+    talkTiltAt = 0;
+    if (talkHeld && petOn) {
+      Serial.print("release\n");
+      // phone never answered so nothing else will clear our listening face
+      if (!talkReady && piPhase == PI_LISTENING) endPiPhase(now);
+    }
+    talkHeld = false;
+    return;
+  }
+  if (talkTiltAt == 0) talkTiltAt = now;
+  if (!petOn) return;
+
+  if (talkHeld) {
+    // phone shut, in the background or not on wrist mic
+    if (!talkReady && piPhase == PI_LISTENING && now - talkStartedAt >= TALK_READY_MS) {
+      setPiPhase(PI_ERROR, now);
+      startSound(SOUND_SLEEP);
+    }
+    return;
+  }
+  if (now - talkTiltAt < TALK_HOLD_MS) return;
+
+  talkHeld = true;
+  talkReady = false;
+  talkStartedAt = now;
+  Serial.print("talk\n");
+  // little click now, the proper chirp waits till the phone is actually listening
+  startSound(SOUND_JOYSTICK);
+  lastMotionAt = now;
+  joystickActive = false;
+  blinking = false;
+  // listening face straight away, the phone takes a moment to catch up
+  setPiPhase(PI_LISTENING, now);
+}
+
 void updateJoystick(unsigned long now) {
   if (now - lastJoystickSample < JOY_SAMPLE_MS) return;
   lastJoystickSample = now;
-  int originalX = axisOffset(analogRead(JOY_X_PIN), joyCentreX, INVERT_JOY_X);
+  int rawX = analogRead(JOY_X_PIN);
+  int originalX = axisOffset(rawX, joyCentreX, INVERT_JOY_X);
   int originalY = axisOffset(analogRead(JOY_Y_PIN), joyCentreY, INVERT_JOY_Y);
   joyX = -originalY;
   joyY = originalX;
+  // stick does nothing while the disco is on, talking included
+  if (discoMode) {
+    talkTiltAt = 0;
+    joyX = joyY = 0;
+    return;
+  }
+  updateTalk(rawX, now);
+  if (talkHeld) joyX = joyY = 0; // eyes stay still while it listens
   if (!petOn) return;
 
   bool moved = (joyX != 0 || joyY != 0);
@@ -532,7 +720,7 @@ void updateJoystick(unsigned long now) {
     lastFaceChange = now;
     lastBlink = now;
     blinking = false;
-    if (!volumeScreen && !pettingActive) renderFace(currentFace);
+    if (!volumeScreen && !pettingActive && !discoMode) renderFace(currentFace);
   }
 }
 
@@ -583,7 +771,7 @@ void updateTouch(unsigned long now) {
     lastBlink = now;
     blinking = false;
     drawnX = 999; // Restore joystick eyes if the stick is still held.
-    if (!volumeScreen && !joystickActive) renderFace(currentFace);
+    if (!volumeScreen && !joystickActive && !discoMode) renderFace(currentFace);
   }
 }
 
@@ -639,7 +827,7 @@ void endPiPhase(unsigned long now) {
   lastFaceChange = now;
   lastBlink = now;
   blinking = false;
-  if (petOn && !volumeScreen && !joystickActive && !pettingActive) renderFace(currentFace);
+  if (petOn && !volumeScreen && !joystickActive && !pettingActive && !discoMode) renderFace(currentFace);
 }
 
 void readPi(unsigned long now) {
@@ -661,6 +849,12 @@ void readPi(unsigned long now) {
     else if (strcmp(piLine, "speaking") == 0) next = PI_SPEAKING;
     else if (strcmp(piLine, "error") == 0) next = PI_ERROR;
 
+    // phone mic is actually on now, this chirp means start talking
+    if (next == PI_LISTENING && talkHeld && !talkReady && petOn) {
+      talkReady = true;
+      startSound(SOUND_WAKE);
+      startEarFlap();
+    }
     if (next == piPhase) continue;
     if (next == PI_IDLE) {
       endPiPhase(now);
@@ -747,7 +941,16 @@ bool updatePi(unsigned long now) {
 
 // ---------- ON / standby ----------
 void setPetPower(bool turnOn) {
+  // switched off mid sentence, dont leave the phone listening
+  if (!turnOn && petOn && talkHeld) Serial.print("release\n");
+  if (talkHeld && !talkReady && piPhase == PI_LISTENING) piPhase = PI_IDLE;
+  talkHeld = false;
+  talkTiltAt = 0;
   petOn = turnOn;
+  discoMode = false;
+  discoDrawn = false;
+  waitingForSecondPress = false;
+  joyButtonArmed = false;
   pettingActive = false;
   havePreviousTap = false;
   doubleTapBoost = false;
@@ -796,6 +999,7 @@ void setup() {
   pinMode(TOUCH_PIN, INPUT);
   pinMode(JOY_X_PIN, INPUT);
   pinMode(JOY_Y_PIN, INPUT);
+  pinMode(JOY_BUTTON_PIN, INPUT_PULLUP);
   long totalX = 0, totalY = 0;
   for (byte i = 0; i < 16; i++) {
     totalX += analogRead(JOY_X_PIN);
@@ -824,6 +1028,7 @@ void setup() {
 
   filteredPot = analogRead(POT_PIN);
   volumePercent = potToPercent(filteredPot);
+  sendVolume();
   lastPotSample = millis();
   lastSwitchReading = digitalRead(POWER_SWITCH_PIN);
   stableSwitchState = lastSwitchReading;
@@ -835,6 +1040,8 @@ void loop() {
   unsigned long now = millis();
   updatePowerSwitch(now);
   now = millis();
+  readJoystickButton(now);
+  checkDiscoTimer(now);
   readPi(now);
   updateMotion(now);
   updateJoystick(now);
@@ -851,6 +1058,10 @@ void loop() {
   updateBuzzer(now);
   if (volumeScreen) return;
 
+  if (discoMode) {
+    updateDisco(now);
+    return;
+  }
   if (pettingActive) {
     renderPetting(now);
     return;

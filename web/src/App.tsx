@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Mic } from "lucide-react";
+import { Mic, Watch } from "lucide-react";
 
-import type { Memory, TurnResult } from "../../shared/protocol";
+import type {
+  Memory,
+  TalkEvent,
+  TurnResult,
+  VolumeEvent,
+} from "../../shared/protocol";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { createRecognition, type Recognition } from "@/lib/speech";
@@ -46,6 +51,16 @@ export function App() {
   const recognition = useRef<Recognition | null>(null);
   const audio = useRef<AudioContext | null>(null);
   const playing = useRef<AudioBufferSourceNode | null>(null);
+  const gain = useRef<GainNode | null>(null);
+  // set by the volume slider on the wrist
+  const volume = useRef(1);
+  const [wrist, setWrist] = useState(false);
+  const armed = useRef(false);
+  const events = useRef<EventSource | null>(null);
+  const wakeLock = useRef<WakeLockSentinel | null>(null);
+  // the wrist events come in outside react, so they need the newest start / stop
+  const handlers = useRef({ startListening, stopListening });
+  handlers.current = { startListening, stopListening };
 
   // the api only returns the newest 20, so 20 means 20+
   async function loadMemories() {
@@ -59,12 +74,78 @@ export function App() {
     void loadMemories();
   }, []);
 
+  useEffect(() => {
+    const onVisible = () => {
+      if (!armed.current) return;
+      if (document.visibilityState === "visible") {
+        connectWrist();
+        void keepAwake();
+      } else {
+        events.current?.close();
+        events.current = null;
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      events.current?.close();
+    };
+  }, []);
+
+  async function keepAwake() {
+    try {
+      wakeLock.current = await navigator.wakeLock.request("screen");
+    } catch {
+    }
+  }
+
+  function connectWrist() {
+    if (events.current) return;
+    const source = new EventSource("/api/events");
+    source.addEventListener("talk", (event) => {
+      const { pressed } = JSON.parse(event.data) as TalkEvent;
+      if (pressed) handlers.current.startListening();
+      else handlers.current.stopListening();
+    });
+    source.addEventListener("volume", (event) => {
+      const { level } = JSON.parse(event.data) as VolumeEvent;
+      volume.current = level / 100;
+      if (gain.current) gain.current.gain.value = volume.current;
+    });
+    events.current = source;
+  }
+
+  async function toggleWrist() {
+    if (armed.current) {
+      armed.current = false;
+      events.current?.close();
+      events.current = null;
+      void wakeLock.current?.release();
+      wakeLock.current = null;
+      setWrist(false);
+      return;
+    }
+    setError("");
+    audio.current ??= new AudioContext();
+    void audio.current.resume();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+    } catch {
+      setError("Mic blocked. Open the app over https and allow the mic.");
+      return;
+    }
+    armed.current = true;
+    connectWrist();
+    setWrist(true);
+    await keepAwake();
+  }
+
   function startListening() {
     if (holding.current || status === "thinking") return;
     holding.current = true;
     setError("");
     playing.current?.stop();
-    // ios wont play the reply later unless audio gets unlocked on a tap
     audio.current ??= new AudioContext();
     void audio.current.resume();
 
@@ -79,8 +160,6 @@ export function App() {
     rec.continuous = true;
     rec.interimResults = true;
     rec.onresult = (event) => {
-      // chrome android gives every partial as its own result ("what", "what can", ...)
-      // so a part that repeats whats already there replaces it instead of adding on
       let text = "";
       for (let i = 0; i < event.results.length; i++) {
         const part = event.results[i][0].transcript.trim();
@@ -102,17 +181,16 @@ export function App() {
       recognition.current = null;
       void respond(latest);
     };
+    rec.onstart = () => tellWrist("listening");
     recognition.current = rec;
     setHeard("");
     setStatus("listening");
-    tellWrist("listening");
     rec.start();
   }
 
   function stopListening() {
     if (!holding.current) return;
     holding.current = false;
-    // onend does the sending once the last words come in
     recognition.current?.stop();
   }
 
@@ -133,7 +211,6 @@ export function App() {
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
     } finally {
-      // if the mic got pressed again mid reply leave it on listening
       setStatus((current) => (current === "listening" ? current : "idle"));
     }
   }
@@ -145,7 +222,12 @@ export function App() {
     const buffer = await context.decodeAudioData(await response.arrayBuffer());
     const source = context.createBufferSource();
     source.buffer = buffer;
-    source.connect(context.destination);
+    if (!gain.current) {
+      gain.current = context.createGain();
+      gain.current.connect(context.destination);
+    }
+    gain.current.gain.value = volume.current;
+    source.connect(gain.current);
     playing.current = source;
     setStatus("speaking");
     tellWrist("speaking");
@@ -154,7 +236,6 @@ export function App() {
       source.start();
     });
     playing.current = null;
-    // cut off by the mic, the wrist is already on listening
     if (!holding.current) tellWrist("idle");
   }
 
@@ -218,6 +299,15 @@ export function App() {
           <Mic />
         </Button>
         <span className="text-muted-foreground text-sm">{labels[status]}</span>
+        <Button
+          variant={wrist ? "secondary" : "outline"}
+          size="sm"
+          aria-pressed={wrist}
+          onClick={() => void toggleWrist()}
+        >
+          <Watch />
+          {wrist ? "Wrist mic on" : "Use wrist mic"}
+        </Button>
       </footer>
     </div>
   );
