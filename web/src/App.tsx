@@ -1,7 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Mic } from "lucide-react";
 
-import type { TurnResult } from "../../shared/protocol";
+import type { Memory, TurnResult } from "../../shared/protocol";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { createRecognition, type Recognition } from "@/lib/speech";
@@ -41,10 +41,23 @@ export function App() {
   const [heard, setHeard] = useState("");
   const [reply, setReply] = useState("");
   const [error, setError] = useState("");
+  const [memories, setMemories] = useState<number | null>(null);
   const holding = useRef(false);
   const recognition = useRef<Recognition | null>(null);
   const audio = useRef<AudioContext | null>(null);
   const playing = useRef<AudioBufferSourceNode | null>(null);
+
+  // the api only returns the newest 20, so 20 means 20+
+  async function loadMemories() {
+    const response = await fetch("/api/memories");
+    if (!response.ok) return;
+    const data = (await response.json()) as { memories: Memory[] };
+    setMemories(data.memories.length);
+  }
+
+  useEffect(() => {
+    void loadMemories();
+  }, []);
 
   function startListening() {
     if (holding.current || status === "thinking") return;
@@ -112,6 +125,7 @@ export function App() {
         await post("/api/chat", { message: text })
       ).json()) as TurnResult;
       setReply(turn.reply);
+      void loadMemories();
       await speak(turn.reply);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
@@ -164,7 +178,9 @@ export function App() {
         </Card>
         <Card className="gap-1 px-4 py-4">
           <span className="text-muted-foreground text-xs">Memories</span>
-          <span className="font-medium">0</span>
+          <span className="font-medium">
+            {memories === null ? "-" : memories >= 20 ? "20+" : memories}
+          </span>
         </Card>
       </main>
 

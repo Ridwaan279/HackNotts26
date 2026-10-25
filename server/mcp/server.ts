@@ -15,7 +15,7 @@ server.registerTool(
   "save_memory",
   {
     description:
-      "Save a fact the user explicitly asks you to remember. Return the saved memory.",
+      "Save a fact about the user so you remember it later, like their name, likes or plans. Return the saved memory.",
     inputSchema: {
       text: memoryText.describe("The fact to remember, as a short sentence."),
     },
@@ -27,7 +27,7 @@ server.registerTool(
   "list_memories",
   {
     description:
-      "Read the most recently saved memories, newest first. Use when asked what you remember.",
+      "Read what you remember about the user, newest first. Use for any question about the user or what you remember.",
     inputSchema: {
       limit: z
         .number()
