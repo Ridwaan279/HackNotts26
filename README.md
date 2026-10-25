@@ -1,13 +1,12 @@
 # HackNotts26
 Project for hacknotts 26
 
-BYTE is a little AI pet that lives on your wrist. It runs a local model through Ollama and uses MCP tools to actually do stuff. Right now it remembers things you tell it and reads them back, all stored on the Pi in SQLite. The phone app talks to the Pi over wifi.
+Iki is a little AI pet (like tamagotchi) that lives on your wrist (but is a stationary box right now). Hermes Agent is the brain, it runs on the Pi with a local model through Ollama, remembers things you tell it and can use tools to actually do stuff. The phone app talks to the Pi over wifi.
 
 # How to Setup
-Need Node 24 and Ollama
+Need Node 24, Ollama and Hermes Agent with its API server on
 
 ```bash
-ollama pull qwen3:1.7b
 npm ci
 cp .env.example .env
 npm run build

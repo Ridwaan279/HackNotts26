@@ -1,8 +1,3 @@
-export interface Memory {
-  id: number;
-  text: string;
-  createdAt: string;
-}
 export type Phase =
   | "idle"
   | "listening"
@@ -38,8 +33,5 @@ export interface TurnResult {
 }
 export interface Health {
   ok: boolean;
-  model: string;
-  ollamaUrl: string;
-  tools: string[];
   error?: string;
 }

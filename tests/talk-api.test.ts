@@ -4,11 +4,7 @@ import { createApp } from "../server/app.ts";
 import { readConfig } from "../server/config.ts";
 
 test("talk/release reach the phone and repeated ready acknowledgements get revisions", async () => {
-  const { app } = createApp({
-    config: readConfig({}),
-    tools: { definitions: [], callTool: async () => ({}), close: async () => {} } as never,
-    chat: (async () => { throw new Error("not used"); }) as never,
-  });
+  const { app } = createApp({ config: readConfig({ HERMES_KEY: "test" }) });
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => server.once("listening", resolve));
   const address = server.address();

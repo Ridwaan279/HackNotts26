@@ -74,8 +74,7 @@ external servo supply. Leave the joystick centred during Arduino startup.
 The Arduino is a controller, not a microphone: the Python adapter and the
 phone page must both be running. Browser speech recognition can depend on
 an online service. ElevenLabs spoken replies also need internet access and
-`ELEVENLABS_API_KEY`. The Ollama model still runs wherever `OLLAMA_BASE_URL`
-points, locally on the Pi or on another machine.
+`ELEVENLABS_API_KEY`. Replies come from Hermes Agent at `HERMES_URL`.
 
 ## Troubleshooting
 
@@ -86,7 +85,7 @@ points, locally on the Pi or on another machine.
   whether the backend is running.
 - **No serial connection:** check `ARDUINO_PORT`, the USB data cable, and that
   Serial Monitor is closed. Some boards use `/dev/ttyUSB0` instead.
-- **It listens but gives no answer:** check the Ollama server/model; for
+- **It listens but gives no answer:** check Hermes and Ollama are running; for
   spoken replies, check the ElevenLabs key and network connection.
 
 ## Checks
@@ -101,4 +100,4 @@ Tests cover phone recognition lifecycle, the talk/release API path and the
 USB bridge's event forwarding. The firmware's hold, release, double-click,
 timeout and standby behaviour was also checked with simulated pins/serial.
 These checks do not replace testing the actual joystick, Android microphone,
-USB connection, Ollama and ElevenLabs together.
+USB connection, Hermes and ElevenLabs together.

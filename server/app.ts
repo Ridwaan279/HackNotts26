@@ -9,28 +9,13 @@ import type {
   TalkEvent,
   VolumeEvent,
 } from "../shared/protocol.js";
-import { runTurn } from "./agent.js";
 import type { Config } from "./config.js";
 import type { Speak } from "./elevenlabs.js";
-import { checkHermes, type Turn } from "./hermes.js";
-import type { MemoryTools } from "./mcp/client.js";
-import { checkOllama, type ModelChat } from "./ollama.js";
+import { checkHermes, createHermesTurn, readMemories } from "./hermes.js";
 
-export function createApp({
-  tools,
-  chat,
-  config,
-  speak,
-  turn = (message, onPhase) => runTurn(message, tools, chat, onPhase),
-}: {
-  tools: MemoryTools;
-  chat: ModelChat;
-  config: Config;
-  speak?: Speak;
-  // hermes when its set up, otherwise our own loop straight to ollama
-  turn?: Turn;
-}) {
+export function createApp({ config, speak }: { config: Config; speak?: Speak }) {
   const app = express();
+  const turn = createHermesTurn(config.hermes);
   const state: PetState = {
     phase: "idle",
     lastReply: "Ready when you are.",
@@ -67,7 +52,7 @@ export function createApp({
       return;
     }
     if (busy) {
-      res.status(409).json({ error: "BYTE is in the middle of a turn." });
+      res.status(409).json({ error: "Iki is in the middle of a turn." });
       return;
     }
     setPhase(parsed.data.phase);
@@ -119,28 +104,12 @@ export function createApp({
     res.json(volume);
   });
   app.get("/api/health", async (_req, res) => {
-    const error = config.hermes
-      ? await checkHermes(config.hermes)
-      : await checkOllama(config);
-    const health: Health = {
-      ok: !error,
-      model: config.hermes ? "hermes-agent" : config.model,
-      ollamaUrl: config.hermes?.url ?? config.ollamaUrl,
-      tools: tools.definitions.map((tool) => tool.name),
-      ...(error ? { error } : {}),
-    };
+    const error = await checkHermes(config.hermes);
+    const health: Health = { ok: !error, ...(error ? { error } : {}) };
     res.status(error ? 503 : 200).json(health);
   });
   app.get("/api/memories", async (_req, res) => {
-    try {
-      res.json(await tools.callTool("list_memories", { limit: 20 }));
-    } catch (error) {
-      res
-        .status(502)
-        .json({
-          error: error instanceof Error ? error.message : String(error),
-        });
-    }
+    res.json({ memories: await readMemories() });
   });
   app.post("/api/chat", async (req, res) => {
     const parsed = z
@@ -157,7 +126,7 @@ export function createApp({
       res
         .status(409)
         .json({
-          error: "BYTE is finishing another request. Try again in a moment.",
+          error: "Iki is finishing another request. Try again in a moment.",
         });
       return;
     }
