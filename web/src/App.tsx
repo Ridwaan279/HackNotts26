@@ -74,19 +74,22 @@ export function App() {
       setError("This browser can't do speech recognition.");
       return;
     }
-    let final = "";
     let latest = "";
     rec.lang = navigator.language;
     rec.continuous = true;
     rec.interimResults = true;
     rec.onresult = (event) => {
-      let interim = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        if (result.isFinal) final += `${result[0].transcript} `;
-        else interim += result[0].transcript;
+      // chrome android gives every partial as its own result ("what", "what can", ...)
+      // so a part that repeats whats already there replaces it instead of adding on
+      let text = "";
+      for (let i = 0; i < event.results.length; i++) {
+        const part = event.results[i][0].transcript.trim();
+        const lower = part.toLowerCase();
+        const sofar = text.toLowerCase();
+        if (lower.startsWith(sofar)) text = part;
+        else if (!sofar.startsWith(lower)) text = `${text} ${part}`;
       }
-      latest = `${final}${interim}`.trim();
+      latest = text;
       setHeard(latest);
     };
     rec.onerror = (event) => {
