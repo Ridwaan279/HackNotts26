@@ -9,7 +9,7 @@ Servo leftEar;
 Servo rightEar;
 
 const byte LEFT_EAR_PIN = 2;
-const byte RIGHT_EAR_PIN = 3;
+const byte RIGHT_EAR_PIN = 10;
 const byte POWER_SWITCH_PIN = 4;
 const byte PIR_PIN = 8;
 const byte TOUCH_PIN = 7;
@@ -115,21 +115,26 @@ unsigned long lastJoystickSample = 0;
 unsigned long lastJoystickActivity = 0;
 int drawnX = 999, drawnY = 999;
 
-// Hold SW on D9 to talk. Release to send; two short clicks start disco.
-const unsigned long TALK_HOLD_MS = 500;
+// Hold the stick where the eyes look down. Centre it to send.
+const unsigned long TALK_HOLD_MS = 1000;
+const int TALK_DOWN_START = 320;
+const int TALK_DOWN_RELEASE = 220;
+bool talkDownArmed = false;
+bool talkDownStarted = false;
 const unsigned long TALK_READY_MS = 8000;
 bool talkHeld = false;
 bool talkReady = false;
 bool talkAttempted = false;
+unsigned long downStartedAt = 0;
 unsigned long buttonPressedAt = 0;
 unsigned long talkStartedAt = 0;
 
-// Disco, double click the stick, runs for 5 seconds or till you double click again
+// Disco runs for 20 seconds, or double-click again to stop.
 const byte JOY_BUTTON_PIN = 9;
 const unsigned long JOY_BUTTON_DEBOUNCE_MS = 15;
 const unsigned long JOY_DOUBLE_PRESS_MS = 800;
 const unsigned long DISCO_STEP_MS = 600;
-const unsigned long DISCO_DURATION_MS = 5000;
+const unsigned long DISCO_DURATION_MS = 20000;
 unsigned long discoStartedAt = 0;
 bool discoMode = false;
 bool discoDrawn = false;
@@ -337,6 +342,55 @@ SoundID activeSound = SOUND_NONE;
 byte soundStep = 0;
 unsigned long soundStepStartedAt = 0;
 
+// Brief chorus hook from Robson Couto's arrangement (Chlorondria score).
+// https://github.com/robsoncouto/arduino-songs/tree/master/nevergonnagiveyouup
+// 114 BPM. The last entry is a pause before repeating the hook.
+const uint16_t discoNotes[] = {440, 494, 587, 494, 740, 740, 659, 0};
+const uint16_t discoNoteTimes[] = {131, 131, 131, 131, 394, 394, 789, 526};
+const unsigned long DISCO_TUNE_LOOP_MS = 2627;
+const bool DISCO_HIGH_OCTAVE = false;
+uint16_t playingDiscoNote = 0;
+unsigned long playingDiscoSlot = 0xFFFFFFFFUL;
+
+void stopDiscoTune() {
+  if (playingDiscoNote != 0) noTone(BUZZER_PIN);
+  playingDiscoNote = 0;
+  playingDiscoSlot = 0xFFFFFFFFUL;
+  analogWrite(BUZZER_PIN, 0);
+}
+
+void updateDiscoTune(unsigned long now) {
+  unsigned long songTime = now - discoStartedAt;
+  unsigned long elapsed = songTime % DISCO_TUNE_LOOP_MS;
+  unsigned long noteEnd = 0;
+  unsigned long timeLeft = 0;
+  byte noteIndex = 0;
+  uint16_t note = 0;
+
+  for (byte i = 0; i < sizeof(discoNotes) / sizeof(discoNotes[0]); i++) {
+    unsigned long gap = discoNoteTimes[i] - discoNoteTimes[i] * 9UL / 10;
+    noteEnd += discoNoteTimes[i];
+    if (elapsed < noteEnd) {
+      noteIndex = i;
+      if (elapsed < noteEnd - gap) {
+        note = discoNotes[i];
+        timeLeft = noteEnd - gap - elapsed;
+      }
+      break;
+    }
+  }
+  if (DISCO_HIGH_OCTAVE && note != 0) note *= 2;
+  if (volumePercent == 0) note = 0;
+  unsigned long slot = (songTime / DISCO_TUNE_LOOP_MS) * 8 + noteIndex;
+  if (note == playingDiscoNote && slot == playingDiscoSlot) return;
+
+  noTone(BUZZER_PIN);
+  analogWrite(BUZZER_PIN, 0);
+  if (note != 0) tone(BUZZER_PIN, note, timeLeft);
+  playingDiscoNote = note;
+  playingDiscoSlot = slot;
+}
+
 void startSound(SoundID sound);
 void startSound(SoundID sound) {
   if (!petOn || volumeScreen) return;
@@ -348,7 +402,12 @@ void startSound(SoundID sound) {
 void updateBuzzer(unsigned long now) {
   if (!petOn) {
     activeSound = SOUND_NONE;
-    analogWrite(BUZZER_PIN, 0);
+    stopDiscoTune();
+    return;
+  }
+  if (discoMode) {
+    activeSound = SOUND_NONE;
+    updateDiscoTune(now);
     return;
   }
 
@@ -549,6 +608,8 @@ void renderJoystickEyes() {
 
 void toggleDisco(unsigned long now) {
   if (!discoMode && talkHeld) return; // dont cut someone off mid sentence
+  stopDiscoTune();
+  activeSound = SOUND_NONE;
   discoMode = !discoMode;
   discoStartedAt = now;
   discoDrawn = false;
@@ -564,7 +625,7 @@ void toggleDisco(unsigned long now) {
   confetti = now;
   drawnX = 999;
   drawnHeartFrame = -1;
-  startSound(SOUND_JOYSTICK);
+  if (!discoMode) startSound(SOUND_JOYSTICK);
 
   if (!discoMode && !volumeScreen && !pettingActive) renderFace(currentFace);
 }
@@ -601,12 +662,11 @@ void readJoystickButton(unsigned long now) {
 
   if (down) {
     buttonPressedAt = now;
-    talkAttempted = false;
     return;
   }
 
   // Long holds are never counted as disco clicks.
-  if (talkHeld || talkAttempted || now - buttonPressedAt >= TALK_HOLD_MS) {
+  if (talkHeld || now - buttonPressedAt >= 500) {
     waitingForSecondPress = false;
     return;
   }
@@ -663,20 +723,42 @@ void setPiPhase(PiPhase next, unsigned long now) {
   piDrawnFrame = -1;
 }
 
+void readJoystickAxes(unsigned long now) {
+  if (now - lastJoystickSample < JOY_SAMPLE_MS) return;
+  lastJoystickSample = now;
+  int originalX = axisOffset(analogRead(JOY_X_PIN), joyCentreX, INVERT_JOY_X);
+  int originalY = axisOffset(analogRead(JOY_Y_PIN), joyCentreY, INVERT_JOY_Y);
+  joyX = -originalY;
+  joyY = originalX;
+}
+
 void updateTalk(unsigned long now) {
-  if (!petOn || discoMode || !joyButtonStable) {
+  bool centred = (joyX == 0 && joyY == 0);
+  bool down = (joyY >= TALK_DOWN_START && abs(joyX) <= 200);
+  if (talkDownStarted || talkHeld) {
+    down = (joyY >= TALK_DOWN_RELEASE && abs(joyX) <= 280);
+  }
+
+  if (!petOn || discoMode || !down) {
     if (talkHeld) {
       Serial.print("release\n");
-      if (!talkReady && piPhase == PI_LISTENING) {
-        endPiPhase(now);
-      }
+      if (!talkReady && piPhase == PI_LISTENING) endPiPhase(now);
     }
     talkHeld = false;
+    talkDownStarted = false;
+    if (!petOn || discoMode) {
+      talkDownArmed = false;
+    } else if (centred) {
+      talkDownArmed = true;
+      talkAttempted = false;
+    }
     return;
   }
 
-  if (!joyButtonArmed) {
-    return;
+  if (!talkDownArmed || (talkAttempted && !talkHeld)) return;
+  if (!talkDownStarted) {
+    talkDownStarted = true;
+    downStartedAt = now;
   }
   if (talkHeld) {
     lastMotionAt = now;
@@ -688,15 +770,11 @@ void updateTalk(unsigned long now) {
     }
     return;
   }
-  if (talkAttempted || now - buttonPressedAt < TALK_HOLD_MS) {
-    return;
-  }
+  if (now - downStartedAt < TALK_HOLD_MS) return;
 
   talkAttempted = true;
   waitingForSecondPress = false;
-  if (piPhase == PI_THINKING || piPhase == PI_ACTING) {
-    return;
-  }
+  if (piPhase == PI_THINKING || piPhase == PI_ACTING) return;
 
   talkHeld = true;
   talkReady = false;
@@ -712,21 +790,7 @@ void updateTalk(unsigned long now) {
 }
 
 void updateJoystick(unsigned long now) {
-  if (now - lastJoystickSample < JOY_SAMPLE_MS) return;
-  lastJoystickSample = now;
-  int rawX = analogRead(JOY_X_PIN);
-  int originalX = axisOffset(rawX, joyCentreX, INVERT_JOY_X);
-  int originalY = axisOffset(analogRead(JOY_Y_PIN), joyCentreY, INVERT_JOY_Y);
-  joyX = -originalY;
-  joyY = originalX;
-  // stick does nothing while the disco is on, talking included
-  if (discoMode) {
-    joyX = joyY = 0;
-    return;
-  }
-  if (talkHeld) {
-    joyX = 0;
-    joyY = 0;
+  if (discoMode || talkHeld) {
     joystickActive = false;
     return;
   }
@@ -981,6 +1045,8 @@ void setPetPower(bool turnOn) {
   talkAttempted = false;
   talkReady = false;
   buttonPressedAt = 0;
+  talkDownStarted = false;
+  talkDownArmed = false;
   petOn = turnOn;
   discoMode = false;
   discoDrawn = false;
@@ -995,7 +1061,7 @@ void setPetPower(bool turnOn) {
   blinking = false;
   volumeScreen = false;
   activeSound = SOUND_NONE;
-  analogWrite(BUZZER_PIN, 0);
+  stopDiscoTune();
 
   if (petOn) {
     restEars();
@@ -1077,6 +1143,7 @@ void loop() {
   now = millis();
   readJoystickButton(now);
   checkDiscoTimer(now);
+  readJoystickAxes(now);
   updateTalk(now);
   readPi(now);
   updateMotion(now);
