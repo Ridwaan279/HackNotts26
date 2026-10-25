@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { Mic, Watch } from "lucide-react";
 
 import type {
-  Memory,
   TalkEvent,
   TurnResult,
   VolumeEvent,
@@ -62,11 +61,10 @@ export function App() {
   const handlers = useRef({ startListening, stopListening });
   handlers.current = { startListening, stopListening };
 
-  // the api only returns the newest 20, so 20 means 20+
   async function loadMemories() {
     const response = await fetch("/api/memories");
     if (!response.ok) return;
-    const data = (await response.json()) as { memories: Memory[] };
+    const data = (await response.json()) as { memories: string[] };
     setMemories(data.memories.length);
   }
 
@@ -245,7 +243,7 @@ export function App() {
   return (
     <div className="mx-auto flex h-full max-w-md flex-col px-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1.5rem,env(safe-area-inset-bottom))]">
       <header className="py-2 text-center text-lg font-semibold tracking-tight">
-        BYTE
+        Iki
       </header>
 
       <main className="grid flex-1 grid-cols-2 grid-rows-[1fr_auto] gap-3 py-3">
@@ -266,7 +264,7 @@ export function App() {
         <Card className="gap-1 px-4 py-4">
           <span className="text-muted-foreground text-xs">Memories</span>
           <span className="font-medium">
-            {memories === null ? "-" : memories >= 20 ? "20+" : memories}
+            {memories ?? "-"}
           </span>
         </Card>
       </main>
